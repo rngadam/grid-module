@@ -1,0 +1,20 @@
+export LOPHILO_TARGET_ARCH:=arm
+export TARGET_OS:=${HOME}/lophilo.nfs
+export TOOLCHAIN_PATH:=${HOME}/lophilo/codesourcery/arm926ej-s
+export PATH:=${TOOLCHAIN_PATH}:${PATH}
+
+obj-m += lophilo.o
+
+lophilo_arm.ko: lophilo.c
+	make V=1 ARCH=arm -C ${HOME}/lophilo/obj/linux-debug M=$(PWD) modules
+
+clean: 
+	make V=1 ARCH=arm -C ${HOME}/lophilo/obj/linux-debug M=$(PWD) clean
+
+install: lophilo_arm.ko
+	sudo cp lophilo.ko ${TARGET_OS} 
+	@echo "on the target system (zImage-debug):"
+	@echo " mount -t debugfs none /sys/kernel/debug"
+	@echo " rmmod lophilo;insmod /lophilo.ko"
+	@echo " ls /sys/kernel/debug/lophilo"
+	@echo " cat /proc/iomem | grep Lophilo"
