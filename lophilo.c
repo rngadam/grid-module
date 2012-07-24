@@ -3,11 +3,6 @@
  *
  * Author: Ricky Ng-Adam <rngadam@lophilo.com>
  *
- * Usage example:
- *
- * $ sudo bash -c "echo 42 > /sys/kernel/debug/lophilo/test"
- * $ sudo bash -c "cat /sys/kernel/debug/lophilo/test"
- * 0x0000002a
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -29,11 +24,6 @@ static struct subsystem subsystems[MAX_SUBSYSTEMS];
 
 struct resource * fpga;
 
-const u32 FPGA_BASE_ADDR = 0x10000000;
-const int SIZE16MB = 16777216; // 2^24
-void* identifier;
-const u32 RGB_VALUE = 0x00006015;
-
 static int device_open(struct inode *, struct file *);
 static int device_release(struct inode *, struct file *);
 static ssize_t device_read(struct file *, char *, size_t, loff_t *);
@@ -42,6 +32,12 @@ static ssize_t device_write(struct file *, const char *, size_t, loff_t *);
 static int Device_Open = 0;  /* Is device open?  Used to prevent multiple
                                         access to the device */
 static struct dentry *lophilo_dentry;
+
+// from linux/arch/arm/mach-at91/board-tabby.c
+extern void __iomem *fpga_cs0_base;
+extern void __iomem *fpga_cs1_base;
+extern void __iomem *fpga_cs2_base;
+extern void __iomem *fpga_cs3_base;
 
 struct file_operations fops = {
        .read = device_read,
@@ -57,29 +53,91 @@ lophilo_init(void)
 	static struct dentry *lophilo_subsystem_dentry;
 	int subsystem_id = 0;
 	char subsystem_str[64];
+	void* current_addr;
+	int i;
 
 	printk(KERN_INFO "Lophilo module loading\n");
 
 	lophilo_dentry = debugfs_create_dir(
 		"lophilo",
 		NULL);
-
+	if(lophilo_dentry == NULL) {
+		printk(KERN_ERR "Could not create root directory entry lophilo in debugfs");
+		return -EINVAL;
+	}
 	//fpga = request_mem_region(FPGA_BASE_ADDR, SIZE16MB, "Lophilo FPGA LEDs");
-	identifier = ioremap_nocache(FPGA_BASE_ADDR, SIZE16MB);
+	// power on
+	//iowrite32(0x03030300, fpga_cs0_base + 0x200);
 
-	//iowrite8(0x0, identifier + 0x103);
-	//iowrite8(0x0, identifier + 0x102);
-	//iowrite8(0x60, identifier + 0x101);
-	//iowrite8(0x15, identifier + 0x100);
+	debugfs_create_x16(
+		"id",
+		S_IRWXU | S_IRWXG | S_IRWXO,
+		lophilo_dentry,
+		fpga_cs0_base + 0x0);
+	debugfs_create_x16(
+		"flag",
+		S_IRWXU | S_IRWXG | S_IRWXO,
+		lophilo_dentry,
+		fpga_cs0_base + 0x2);
+	debugfs_create_x32(
+		"ver",
+		S_IRWXU | S_IRWXG | S_IRWXO,
+		lophilo_dentry,
+		fpga_cs0_base + 0x4);
+	debugfs_create_x32(
+		"lock",
+		S_IRWXU | S_IRWXG | S_IRWXO,
+		lophilo_dentry,
+		fpga_cs0_base + 0x8);
+	debugfs_create_x32(
+		"lockb",
+		S_IRWXU | S_IRWXG | S_IRWXO,
+		lophilo_dentry,
+		fpga_cs0_base + 0xc);
+
+	for(i=0; i<4; i++) {
+		sprintf(subsystem_str, "led%d", i);
+		lophilo_subsystem_dentry = debugfs_create_dir(
+			subsystem_str,
+			lophilo_dentry);
+
+		debugfs_create_x8(
+			"b",
+			S_IRWXU | S_IRWXG | S_IRWXO,
+			lophilo_subsystem_dentry,
+			fpga_cs0_base + 0x100 + 0x4 * i);
+		debugfs_create_x8(
+			"g",
+			S_IRWXU | S_IRWXG | S_IRWXO,
+			lophilo_subsystem_dentry,
+			fpga_cs0_base + 0x101 + 0x4 * i);
+		debugfs_create_x8(
+			"r",
+			S_IRWXU | S_IRWXG | S_IRWXO,
+			lophilo_subsystem_dentry,
+			fpga_cs0_base + 0x102 + 0x4 * i);
+		debugfs_create_x8(
+			"s",
+			S_IRWXU | S_IRWXG | S_IRWXO,
+			lophilo_subsystem_dentry,
+			fpga_cs0_base + 0x103 + 0x4 * i);
+		debugfs_create_x32(
+			"srgb",
+			S_IRWXU | S_IRWXG | S_IRWXO,
+			lophilo_subsystem_dentry,
+			fpga_cs0_base + 0x100);
+	}
+
+	current_addr = fpga_cs1_base;
 
 	while(true) {
 		if(subsystem_id == MAX_SUBSYSTEMS) {
-			printk(KERN_INFO "Lophilo ended detection, maximum found %ld\n", MAX_SUBSYSTEMS);
+			printk(KERN_INFO "Lophilo ended detection, maximum found %d\n", MAX_SUBSYSTEMS);
 			break;
 		}
 
-		subsystems[subsystem_id].addr = identifier;
-		subsystems[subsystem_id].id = ioread32(identifier + 0x4);
+		subsystems[subsystem_id].addr = current_addr;
+		subsystems[subsystem_id].id = ioread32(current_addr + 0x4);
 
 		if((subsystems[subsystem_id].id & 0xea000000) == 0xea000000) {
 			printk(KERN_INFO "Lophilo adding subsystem 0x%x of type 0x%x\n", subsystem_id, subsystems[subsystem_id].id);
@@ -89,41 +147,41 @@ lophilo_init(void)
 		}
 
 
-		subsystems[subsystem_id].size = ioread32(identifier);
-		printk(KERN_INFO "Subsystem size 0x%x\n", subsystems[subsystem_id].size);
+		subsystems[subsystem_id].size = ioread32(current_addr);
+		//printk(KERN_INFO "Subsystem size 0x%x\n", subsystems[subsystem_id].size);
 
 		sprintf(subsystem_str, "subsystem%d", subsystem_id);
-		lophilo_subsystem_dentry = debugfs_create_dir(
+		debugfs_create_dir(
 			subsystem_str,
 			lophilo_dentry);
 
-		lophilo_dentry_test = debugfs_create_x32(
+		debugfs_create_x32(
 			"size",
 			S_IRWXU | S_IRWXG | S_IRWXO,
 			lophilo_subsystem_dentry,
 			&subsystems[subsystem_id].size);
 
-		lophilo_dentry_test = debugfs_create_x32(
+		debugfs_create_x32(
 			"id",
 			S_IRWXU | S_IRWXG | S_IRWXO,
 			lophilo_subsystem_dentry,
 			&subsystems[subsystem_id].id);
 
-		lophilo_dentry_test = debugfs_create_x32(
+		debugfs_create_x32(
 			"addr",
 			S_IRWXU | S_IRWXG | S_IRWXO,
 			lophilo_subsystem_dentry,
 			&subsystems[subsystem_id].addr);
 
-		lophilo_dentry_test = debugfs_create_file(
+		debugfs_create_file(
 			"mem",
 			S_IRWXU | S_IRWXG | S_IRWXO,
 			lophilo_subsystem_dentry,
 			&subsystems[subsystem_id],
 			&fops
 			);
-		identifier += subsystems[subsystem_id].size;
-		printk(KERN_INFO "identifier increment to 0x%x for subsystem 0x%x", identifier, subsystem_id);
+		current_addr += subsystems[subsystem_id].size;
+		//printk(KERN_INFO "current_addr increment to 0x%x for subsystem 0x%x", current_addr, subsystem_id);
 		subsystem_id++;
 
 	}
@@ -136,7 +194,6 @@ lophilo_cleanup(void)
 {
 	printk(KERN_INFO "Lophilo module uninstalling\n");
 	debugfs_remove_recursive(lophilo_dentry);
-	iounmap(identifier);
 	//release_mem_region(FPGA_BASE_ADDR, SIZE16MB);
 	return;
 }
