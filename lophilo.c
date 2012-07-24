@@ -46,11 +46,55 @@ struct file_operations fops = {
        .release = device_release
  };
 
+#define create_channel_file(size, name, offset) debugfs_create_x##size( \
+		name, \
+		S_IRWXU | S_IRWXG | S_IRWXO, \
+		parent, \
+		addr + offset);
+
+ void create_channel_gpio(char* buffer, struct dentry * parent, void* addr)
+ {
+ 	int i;
+
+ 	parent = debugfs_create_dir("gpio", parent);
+
+ 	create_channel_file(32, "dout", 0x8);
+ 	create_channel_file(32, "din", 0xc);
+ 	create_channel_file(32, "doe", 0x10);
+ 	create_channel_file(32, "imask", 0x20);
+ 	create_channel_file(32, "iclr", 0x24);
+ 	create_channel_file(32, "ie", 0x28);
+ 	create_channel_file(32, "iinv", 0x2c);
+ 	create_channel_file(32, "iedge", 0x30);
+ 	for(i=0; i<26; i++) {
+ 		sprintf(buffer, "io%d", i);
+ 		create_channel_file(8, buffer, 0x40 + i);
+ 	}
+ }
+
+ void create_channel_pwm(char* buffer, struct dentry * parent, void* addr)
+ {
+ 	int i;
+
+ 	struct dentry * root = debugfs_create_dir("pwm", parent);
+
+ 	for(i=0; i<26; i++) {
+ 		sprintf(buffer, "io%d", i);
+ 		parent = debugfs_create_dir(buffer, root);
+
+	 	create_channel_file(8, "reset", 0x8 + i*32);
+	 	create_channel_file(8, "outinv", 0x9 + i*32);
+	 	create_channel_file(8, "pmen", 0xa + i*32);
+	 	create_channel_file(8, "fmen", 0xb + i*32);
+	 	create_channel_file(32, "gate", 0xc + i*32);
+	 	create_channel_file(32, "dtyc", 0x10 + i*32);
+	 }
+ }
+
 static int __init
 lophilo_init(void)
 {
-	struct dentry *lophilo_dentry_test;
-	static struct dentry *lophilo_subsystem_dentry;
+	struct dentry *lophilo_subsystem_dentry;
 	int subsystem_id = 0;
 	char subsystem_str[64];
 	void* current_addr;
@@ -95,6 +139,12 @@ lophilo_init(void)
 		lophilo_dentry,
 		fpga_cs0_base + 0xc);
 
+	debugfs_create_x32(
+		"power",
+		S_IRWXU | S_IRWXG | S_IRWXO,
+		lophilo_dentry,
+		fpga_cs0_base + 0x200);
+
 	for(i=0; i<4; i++) {
 		sprintf(subsystem_str, "led%d", i);
 		lophilo_subsystem_dentry = debugfs_create_dir(
@@ -128,7 +178,14 @@ lophilo_init(void)
 			fpga_cs0_base + 0x100);
 	}
 
+
 	current_addr = fpga_cs1_base;
+	lophilo_subsystem_dentry = debugfs_create_dir("a", lophilo_dentry);
+	create_channel_gpio(subsystem_str, lophilo_subsystem_dentry, fpga_cs1_base);
+
+	lophilo_subsystem_dentry = debugfs_create_dir("b", lophilo_dentry);
+	create_channel_gpio(subsystem_str, lophilo_subsystem_dentry, fpga_cs1_base + 0x80);
+	create_channel_pwm(subsystem_str, lophilo_subsystem_dentry, fpga_cs1_base + 0x100);
 
 	while(true) {
 		if(subsystem_id == MAX_SUBSYSTEMS) {
