@@ -1,26 +1,26 @@
 export ARCH:=$(shell /usr/bin/dpkg-architecture -qDEB_HOST_ARCH_CPU)
+export TARGET_OS:=${HOME}/lophilo.nfs
+export TOOLCHAIN_PATH:=${HOME}/lophilo/codesourcery/arm926ej-s
+export PATH:=${TOOLCHAIN_PATH}:${PATH}
+export BUILD_DIR:=${HOME}/lophilo/obj/linux-debug 
+
 obj-m += lophilo.o
-MODULE_SUBDIR=$(TARGETDIR)/lib/modules/$(shell uname -r)
-BUILD_DIR=/lib/modules/$(shell uname -r)/build
 
-.PHONY: load clean install checkstyle
+.PHONY: clean install checkstyle
 
-all: lophilo.ko /dev/lophilo load
+lophilo_arm.ko: lophilo.c
+	make V=1 ARCH=arm -C ${BUILD_DIR} M=$(PWD) modules
 
-lophilo.ko: lophilo.c
-	make -C ${BUILD_DIR} M=$(PWD) modules
+clean: 
+	make V=1 ARCH=arm -C ${BUILD_DIR} M=$(PWD) clean
 
-load: lophilo.ko
-	-sudo rmmod lophilo
-	sudo insmod lophilo.ko
-
-clean:
-	make -C ${BUILD_DIR} M=$(PWD) clean
-
-install: lophilo.ko
-	mkdir -p $(MODULE_SUBDIR)
-	mkdir -p $(TARGETDIR)/bin
-	cp lophilo.ko $(MODULE_SUBDIR)
+install: lophilo_arm.ko
+	sudo cp lophilo.ko ${TARGET_OS} 
+	@echo "on the target system (zImage-debug):"
+	@echo " mount -t debugfs none /sys/kernel/debug"
+	@echo " rmmod lophilo;insmod /lophilo.ko"
+	@echo " ls /sys/kernel/debug/lophilo"
+	@echo " cat /proc/iomem | grep Lophilo"
 
 checkstyle:
 	# the root requirement doesn't seem to be there in 3.4
