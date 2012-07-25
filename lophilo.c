@@ -11,7 +11,7 @@
 #include <asm/io.h>
 #include <asm/uaccess.h>  /* for put_user */
 
-#define MAX_SUBSYSTEMS 16
+#define MAX_SUBSYSTEMS 32
 
 struct subsystem {
 	u32 id;
