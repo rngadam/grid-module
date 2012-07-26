@@ -12,6 +12,13 @@
 #include <asm/uaccess.h>  /* for put_user */
 #include <linux/mm.h> // remap_pfn_range
 #include <asm/page.h> // page_to_pfn
+
+// from linux/arch/arm/mach-at91/board-tabby.c
+extern void __iomem *fpga_cs0_base;
+extern void __iomem *fpga_cs1_base;
+extern void __iomem *fpga_cs2_base;
+extern void __iomem *fpga_cs3_base;
+
 #define MAX_SUBSYSTEMS 32
 
 #define GPIO_SUBSYSTEM 0xea680001
@@ -23,30 +30,17 @@
 struct subsystem {
 	u32 id;
 	u32 size;
-	u32 addr;
-	u32 current_offset;
+	u32 vaddr;
+	u32 offset;
+	u32 index;
+	u32 paddr;
 };
-
-static struct subsystem subsystems[MAX_SUBSYSTEMS];
-
-struct resource * fpga;
 
 static int device_open(struct inode *, struct file *);
 static int device_release(struct inode *, struct file *);
 static ssize_t device_read(struct file *, char *, size_t, loff_t *);
 static ssize_t device_write(struct file *, const char *, size_t, loff_t *);
 static int map_lophilo(struct file *filp, struct vm_area_struct *vma);
-static int map_lophilo2(struct file *filp, struct vm_area_struct *vma);
-
-static int Device_Open = 0;  /* Is device open?  Used to prevent multiple
-                                        access to the device */
-static struct dentry *lophilo_dentry;
-
-// from linux/arch/arm/mach-at91/board-tabby.c
-extern void __iomem *fpga_cs0_base;
-extern void __iomem *fpga_cs1_base;
-extern void __iomem *fpga_cs2_base;
-extern void __iomem *fpga_cs3_base;
 
 struct file_operations fops_mem = {
 	.owner   = THIS_MODULE,
@@ -56,6 +50,28 @@ struct file_operations fops_mem = {
 	.release = device_release,
 	.mmap    = map_lophilo
  };
+
+static struct subsystem subsystems[MAX_SUBSYSTEMS];
+
+static struct subsystem sys_subsystem = {
+	.id = 0,
+	.size = 0x204,
+	.paddr = SYS_PHYS_ADDR,
+	.offset = 0
+};
+
+static struct subsystem mod_subsystem = {
+	.id = 1,
+	.paddr = MOD_PHYS_ADDR,
+	.offset = 0
+};
+
+struct resource * fpga;
+
+static int Device_Open = 0;  /* Is device open?  Used to prevent multiple
+                                        access to the device */
+static struct dentry *lophilo_dentry;
+
 
 #define CREATE_CHANNEL_FILE(size, name, offset) debugfs_create_x##size( \
 		name, \
@@ -103,6 +119,7 @@ struct file_operations fops_mem = {
 	return root;
  }
 
+
 static int __init
 lophilo_init(void)
 {
@@ -124,7 +141,8 @@ lophilo_init(void)
 		return -EINVAL;
 	}
 	//fpga = request_mem_region(FPGA_BASE_ADDR, SIZE16MB, "Lophilo FPGA LEDs");
-
+	sys_subsystem.vaddr = fpga_cs0_base;
+	mod_subsystem.vaddr = fpga_cs1_base;
 	debugfs_create_x16(
 		"id",
 		S_IRWXU | S_IRWXG | S_IRWXO,
@@ -156,6 +174,22 @@ lophilo_init(void)
 		S_IRWXU | S_IRWXG | S_IRWXO,
 		lophilo_dentry,
 		fpga_cs0_base + 0x200);
+
+	debugfs_create_file(
+		"sysmem",
+		S_IRWXU | S_IRWXG | S_IRWXO,
+		lophilo_dentry,
+		&sys_subsystem,
+		&fops_mem
+		);
+
+	debugfs_create_file(
+		"modmem",
+		S_IRWXU | S_IRWXG | S_IRWXO,
+		lophilo_dentry,
+		&mod_subsystem,
+		&fops_mem
+		);
 
 	for(i=0; i<4; i++) {
 		sprintf(buffer, "led%d", i);
@@ -194,11 +228,13 @@ lophilo_init(void)
 
 	while(true) {
 		if(subsystem_id == MAX_SUBSYSTEMS) {
-			printk(KERN_INFO "Lophilo ended detection, maximum found %d\n", MAX_SUBSYSTEMS);
+			printk(KERN_INFO "Lophilo ended detection, maximum found %d\n",
+				MAX_SUBSYSTEMS);
 			break;
 		}
 
 		subsystems[subsystem_id].id = ioread32(current_addr + 0x4);
+		subsystems[subsystem_id].offset = fpga_cs1_base - current_addr;
 
 		if((subsystems[subsystem_id].id & 0xea000000) == 0xea000000) {
 			printk(KERN_INFO "Lophilo adding subsystem 0x%x of type 0x%x at 0x%x\n",
@@ -209,10 +245,10 @@ lophilo_init(void)
 			break;
 		}
 
-		subsystems[subsystem_id].addr = (u32) current_addr;
+		subsystems[subsystem_id].vaddr = (u32) current_addr;
+		subsystems[subsystem_id].paddr = MOD_PHYS_ADDR;
 
 		subsystems[subsystem_id].size = ioread32(current_addr);
-		//printk(KERN_INFO "Subsystem size 0x%x\n", subsystems[subsystem_id].size);
 
 		switch(subsystems[subsystem_id].id) {
 			case GPIO_SUBSYSTEM:
@@ -220,14 +256,14 @@ lophilo_init(void)
 					gpio_id++,
 					buffer,
 					lophilo_dentry,
-					subsystems[subsystem_id].addr);
+					subsystems[subsystem_id].vaddr);
 				break;
 			case PWM_SUBSYSTEM:
 				lophilo_subsystem_dentry = create_channel_pwm(
 					pwm_id++,
 					buffer,
 					lophilo_dentry,
-					subsystems[subsystem_id].addr);
+					subsystems[subsystem_id].vaddr);
 				break;
 			default:
 				printk(KERN_ERR "Unsupported file system id %d", subsystems[subsystem_id].id);
@@ -249,38 +285,15 @@ lophilo_init(void)
 			"addr",
 			S_IRWXU | S_IRWXG | S_IRWXO,
 			lophilo_subsystem_dentry,
-			&subsystems[subsystem_id].addr);
+			&subsystems[subsystem_id].vaddr);
 
-		debugfs_create_file(
-			"mem",
-			S_IRWXU | S_IRWXG | S_IRWXO,
-			lophilo_subsystem_dentry,
-			&subsystems[subsystem_id],
-			&fops_mem
-			);
+
 		current_addr += subsystems[subsystem_id].size;
+		mod_subsystem.size += subsystems[subsystem_id].size;
 		//printk(KERN_INFO "current_addr increment to 0x%x for subsystem 0x%x", current_addr, subsystem_id);
 		subsystem_id++;
 
 	}
-
-	return 0;
-}
-
-static int
-map_lophilo2(struct file *filp, struct vm_area_struct *vma)
-{
-	struct subsystem* subsystem_ptr = (struct subsystem*) filp->private_data;
-	unsigned long simple_region_size = subsystem_ptr->size;
-	unsigned long simple_region_start = subsystem_ptr->addr;
-	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
-	unsigned long physical = simple_region_start + off;
-	unsigned long vsize = vma->vm_end - vma->vm_start;
-	unsigned long psize = simple_region_size - off;
-
-	if (vsize > psize)
-    		return -EINVAL; /*  spans too high */
-	remap_pfn_range(vma, vma->vm_start, physical, vsize, vma->vm_page_prot);
 
 	return 0;
 }
@@ -294,17 +307,16 @@ map_lophilo(struct file *filp, struct vm_area_struct *vma)
 
 
 	if(size != target_size) {
-		printk(KERN_INFO "Invalid allocation request, expected %ld, got %ld", target_size, size);
+		printk(KERN_INFO "Invalid allocation request, expected %ld, got %ld",
+			target_size, size);
                 return -EAGAIN;
 	}
-	printk(KERN_INFO "will map to virt 0x%x phys 0x%x bus 0x%x",
-		subsystem_ptr->addr,
-		virt_to_phys((void*)subsystem_ptr->addr),
-		virt_to_bus((void*)subsystem_ptr->addr));
 
 	/*
 
-	Adapted from: http://fixunix.com/kernel/242682-mapping-pci-memory-user-space.html
+	Comment adapted from:
+
+	http://fixunix.com/kernel/242682-mapping-pci-memory-user-space.html
 
 	There is no relationship between the address returned from ioremap and
 	what you pass into io_remap_page_range(). ioremap gives you a kernel
@@ -319,7 +331,7 @@ map_lophilo(struct file *filp, struct vm_area_struct *vma)
 	if (remap_pfn_range(
 			vma,
 			vma->vm_start,
-			0x20000000 >> PAGE_SHIFT,
+			subsystem_ptr->paddr >> PAGE_SHIFT,
 			PAGE_SIZE,
 			vma->vm_page_prot)) {
 		printk(KERN_INFO "Allocation failed!");
@@ -354,7 +366,7 @@ static int device_open(struct inode *inode, struct file *file)
 
    printk(KERN_DEBUG "Dumping memory of subsystem size 0x%x bytes\n", subsystem_ptr->size);
 
-   subsystem_ptr->current_offset = 0;
+   subsystem_ptr->index = 0;
    file->private_data = subsystem_ptr;
 
    return 0;
@@ -382,19 +394,19 @@ static ssize_t device_read(struct file *filp,
    /* Number of bytes actually written to the buffer */
    int bytes_read = 0;
 
-   if(subsystem_ptr->current_offset >= subsystem_ptr->size)
+   if(subsystem_ptr->index >= subsystem_ptr->size)
    	return 0;
 
    /* Actually put the data into the buffer */
-   while (length && (subsystem_ptr->current_offset < subsystem_ptr->size))  {
+   while (length && (subsystem_ptr->index < subsystem_ptr->size))  {
 
         /* The buffer is in the user data segment, not the kernel segment;
          * assignment won't work.  We have to use put_user which copies data from
          * the kernel data segment to the user data segment. */
          put_user(
-         	*((char*) (subsystem_ptr->addr + subsystem_ptr->current_offset)),
+         	*((char*) (subsystem_ptr->vaddr + subsystem_ptr->index)),
          	buffer++);
-         subsystem_ptr->current_offset++;
+         subsystem_ptr->index++;
 
          length--;
          bytes_read++;

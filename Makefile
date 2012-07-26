@@ -16,9 +16,13 @@ lophilo.ko: lophilo.c
 clean: 
 	make V=1 ARCH=arm -C ${BUILD_DIR} M=$(PWD) clean
 
-install: lophilo.ko
+install: lophilo.ko lophilo_user
 	sudo cp lophilo.ko ${TARGET_OS} 
+	sudo cp lophilo_user ${TARGET_OS} 
 
 checkstyle:
 	# the root requirement doesn't seem to be there in 3.4
 	${SRC_DIR}/scripts/checkpatch.pl -f lophilo.c
+
+lophilo_user: lophilo_user.c
+	gcc -g lophilo_user.c -o lophilo_user
