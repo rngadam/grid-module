@@ -34,6 +34,7 @@ struct subsystem {
 	u32 offset;
 	u32 index;
 	u32 paddr;
+	u8 opened;
 };
 
 static int device_open(struct inode *, struct file *);
@@ -66,26 +67,54 @@ static struct subsystem mod_subsystem = {
 	.offset = 0
 };
 
+char registry[16000];
+static struct debugfs_blob_wrapper registry_blob = {
+	.data = registry,
+	.size = 0
+};
+
 struct resource * fpga;
 
-static int Device_Open = 0;  /* Is device open?  Used to prevent multiple
-                                        access to the device */
 static struct dentry *lophilo_dentry;
 
+char parent_name[64]; // for generating names
 
-#define CREATE_CHANNEL_FILE(size, name, offset) debugfs_create_x##size( \
+#define CREATE_CHANNEL_FILE(size, name, offset) \
+	debugfs_create_x##size( \
 		name, \
 		S_IRWXU | S_IRWXG | S_IRWXO, \
 		root, \
-		(void*) addr + offset);
+		(void*) addr + offset); \
+	create_registry_entry(size, parent_name, name, addr, offset);
 
- struct dentry * create_channel_gpio(u8 id, char* buffer, struct dentry * parent, u32 addr)
+void create_registry_entry(u8 size, char* parent_name, char* name, u32 addr, u32 offset)
+{
+	char* type_sys = "sys";
+	char* type_mod = "mod";
+	char* type;
+	if(addr < (u32)fpga_cs1_base) {
+		type = type_sys;
+		offset += addr - (u32)fpga_cs0_base;
+	}  else {
+		type = type_mod;
+		offset += addr - (u32)fpga_cs1_base;
+	}
+	sprintf(&registry[registry_blob.size],
+		"%s %u %s %s %u\n",
+		type, size, parent_name, name, offset);
+	printk(KERN_INFO "%s", &registry[registry_blob.size]);
+	registry_blob.size += strlen(&registry[registry_blob.size]);
+}
+
+
+ struct dentry * create_channel_gpio(u8 id, struct dentry * parent, u32 addr)
  {
  	int i;
  	struct dentry * root;
+ 	char io_name[3];
 
- 	sprintf(buffer, "gpio%d", id);
- 	root  = debugfs_create_dir(buffer, parent);
+ 	sprintf(parent_name, "gpio%d", id);
+ 	root  = debugfs_create_dir(parent_name, parent);
 
  	CREATE_CHANNEL_FILE(32, "dout", 0x8);
  	CREATE_CHANNEL_FILE(32, "din", 0xc);
@@ -96,18 +125,34 @@ static struct dentry *lophilo_dentry;
  	CREATE_CHANNEL_FILE(32, "iinv", 0x2c);
  	CREATE_CHANNEL_FILE(32, "iedge", 0x30);
  	for(i=0; i<26; i++) {
- 		sprintf(buffer, "io%d", i);
- 		CREATE_CHANNEL_FILE(8, buffer, 0x40 + i);
+ 		sprintf(io_name, "io%d", i);
+ 		CREATE_CHANNEL_FILE(8, io_name, 0x40 + i);
  	}
  	return root;
  }
 
- struct dentry * create_channel_pwm(u8 id, char* buffer, struct dentry * parent, u32 addr)
+ struct dentry * create_led(u8 id,  struct dentry * parent, u32 addr)
  {
  	struct dentry * root;
 
- 	sprintf(buffer, "pwm%d", id);
- 	root = debugfs_create_dir(buffer, parent);
+	sprintf(parent_name, "led%d", id);
+	root = debugfs_create_dir(parent_name, parent);
+
+ 	CREATE_CHANNEL_FILE(8, "b",  0x100 + 0x4 * id);
+ 	CREATE_CHANNEL_FILE(8, "g",  0x101 + 0x4 * id);
+ 	CREATE_CHANNEL_FILE(8, "r",  0x102 + 0x4 * id);
+ 	CREATE_CHANNEL_FILE(8, "s",  0x103 + 0x4 * id);
+ 	CREATE_CHANNEL_FILE(32, "srgb",  0x100);
+
+ 	return root;
+ }
+
+ struct dentry * create_channel_pwm(u8 id, struct dentry * parent, u32 addr)
+ {
+ 	struct dentry * root;
+
+ 	sprintf(parent_name, "pwm%d", id);
+ 	root = debugfs_create_dir(parent_name, parent);
 
  	CREATE_CHANNEL_FILE(8, "reset", 0x8);
  	CREATE_CHANNEL_FILE(8, "outinv", 0x9);
@@ -119,13 +164,23 @@ static struct dentry *lophilo_dentry;
 	return root;
  }
 
+ void create_root(struct dentry * root, u32 addr)
+ {
+ 	strcpy(parent_name, "lophilo");
+ 	CREATE_CHANNEL_FILE(16, "id", 0x0);
+	CREATE_CHANNEL_FILE(16, "flag", 0x2);
+	CREATE_CHANNEL_FILE(32, "ver", 0x4);
+	CREATE_CHANNEL_FILE(32, "lock", 0x8);
+	CREATE_CHANNEL_FILE(32, "lockb", 0xc);
+	CREATE_CHANNEL_FILE(32, "power", 0x200);
+}
 
 static int __init
 lophilo_init(void)
 {
 	struct dentry *lophilo_subsystem_dentry;
 	int subsystem_id = 0;
-	char buffer[64];
+
 	void* current_addr;
 	int i;
 	u8 pwm_id = 0;
@@ -141,39 +196,10 @@ lophilo_init(void)
 		return -EINVAL;
 	}
 	//fpga = request_mem_region(FPGA_BASE_ADDR, SIZE16MB, "Lophilo FPGA LEDs");
-	sys_subsystem.vaddr = fpga_cs0_base;
-	mod_subsystem.vaddr = fpga_cs1_base;
-	debugfs_create_x16(
-		"id",
-		S_IRWXU | S_IRWXG | S_IRWXO,
-		lophilo_dentry,
-		fpga_cs0_base + 0x0);
-	debugfs_create_x16(
-		"flag",
-		S_IRWXU | S_IRWXG | S_IRWXO,
-		lophilo_dentry,
-		fpga_cs0_base + 0x2);
-	debugfs_create_x32(
-		"ver",
-		S_IRWXU | S_IRWXG | S_IRWXO,
-		lophilo_dentry,
-		fpga_cs0_base + 0x4);
-	debugfs_create_x32(
-		"lock",
-		S_IRWXU | S_IRWXG | S_IRWXO,
-		lophilo_dentry,
-		fpga_cs0_base + 0x8);
-	debugfs_create_x32(
-		"lockb",
-		S_IRWXU | S_IRWXG | S_IRWXO,
-		lophilo_dentry,
-		fpga_cs0_base + 0xc);
+	sys_subsystem.vaddr = (u32) fpga_cs0_base;
+	mod_subsystem.vaddr = (u32) fpga_cs1_base;
 
-	debugfs_create_x32(
-		"power",
-		S_IRWXU | S_IRWXG | S_IRWXO,
-		lophilo_dentry,
-		fpga_cs0_base + 0x200);
+	create_root(lophilo_dentry, sys_subsystem.vaddr);
 
 	debugfs_create_file(
 		"sysmem",
@@ -192,36 +218,7 @@ lophilo_init(void)
 		);
 
 	for(i=0; i<4; i++) {
-		sprintf(buffer, "led%d", i);
-		lophilo_subsystem_dentry = debugfs_create_dir(
-			buffer,
-			lophilo_dentry);
-
-		debugfs_create_x8(
-			"b",
-			S_IRWXU | S_IRWXG | S_IRWXO,
-			lophilo_subsystem_dentry,
-			fpga_cs0_base + 0x100 + 0x4 * i);
-		debugfs_create_x8(
-			"g",
-			S_IRWXU | S_IRWXG | S_IRWXO,
-			lophilo_subsystem_dentry,
-			fpga_cs0_base + 0x101 + 0x4 * i);
-		debugfs_create_x8(
-			"r",
-			S_IRWXU | S_IRWXG | S_IRWXO,
-			lophilo_subsystem_dentry,
-			fpga_cs0_base + 0x102 + 0x4 * i);
-		debugfs_create_x8(
-			"s",
-			S_IRWXU | S_IRWXG | S_IRWXO,
-			lophilo_subsystem_dentry,
-			fpga_cs0_base + 0x103 + 0x4 * i);
-		debugfs_create_x32(
-			"srgb",
-			S_IRWXU | S_IRWXG | S_IRWXO,
-			lophilo_subsystem_dentry,
-			fpga_cs0_base + 0x100);
+		create_led(i, lophilo_dentry, sys_subsystem.vaddr);
 	}
 
 	current_addr = fpga_cs1_base;
@@ -254,19 +251,19 @@ lophilo_init(void)
 			case GPIO_SUBSYSTEM:
 				lophilo_subsystem_dentry = create_channel_gpio(
 					gpio_id++,
-					buffer,
 					lophilo_dentry,
 					subsystems[subsystem_id].vaddr);
 				break;
 			case PWM_SUBSYSTEM:
 				lophilo_subsystem_dentry = create_channel_pwm(
 					pwm_id++,
-					buffer,
 					lophilo_dentry,
 					subsystems[subsystem_id].vaddr);
 				break;
 			default:
 				printk(KERN_ERR "Unsupported file system id %d", subsystems[subsystem_id].id);
+				return -EINVAL;
+
 		}
 
 		debugfs_create_x32(
@@ -295,6 +292,11 @@ lophilo_init(void)
 
 	}
 
+	debugfs_create_blob(
+		"registry",
+		S_IRWXU | S_IRWXG | S_IRWXO,
+		lophilo_dentry,
+		&registry_blob);
 	return 0;
 }
 
@@ -360,11 +362,9 @@ static int device_open(struct inode *inode, struct file *file)
 {
    struct subsystem* subsystem_ptr = inode->i_private;
 
-   if (Device_Open)
+   if (subsystem_ptr->opened)
    	return -EBUSY;
-   Device_Open++;
-
-   printk(KERN_DEBUG "Dumping memory of subsystem size 0x%x bytes\n", subsystem_ptr->size);
+   subsystem_ptr->opened++;
 
    subsystem_ptr->index = 0;
    file->private_data = subsystem_ptr;
@@ -376,7 +376,9 @@ static int device_open(struct inode *inode, struct file *file)
 /* Called when a process closes the device file */
 static int device_release(struct inode *inode, struct file *file)
 {
-   Device_Open --;     /* We're now ready for our next caller */
+   struct subsystem* subsystem_ptr = inode->i_private;
+
+   subsystem_ptr->opened --;     /* We're now ready for our next caller */
 
    return 0;
 }
