@@ -1,5 +1,5 @@
 /*
- * Demonstration of the use of debugfs
+ * Demonstration of the use of debugfs with Lophilo
  *
  * Author: Ricky Ng-Adam <rngadam@lophilo.com>
  *
@@ -11,16 +11,19 @@
 #include <asm/io.h>
 #include <asm/uaccess.h>  /* for put_user */
 #include <linux/mm.h> // remap_pfn_range
-
+#include <asm/page.h> // page_to_pfn
 #define MAX_SUBSYSTEMS 32
 
 #define GPIO_SUBSYSTEM 0xea680001
 #define PWM_SUBSYSTEM 0xea680002
 
+#define SYS_PHYS_ADDR 0x10000000
+#define MOD_PHYS_ADDR 0x20000000
+
 struct subsystem {
 	u32 id;
 	u32 size;
-	char* addr;
+	u32 addr;
 	u32 current_offset;
 };
 
@@ -33,6 +36,7 @@ static int device_release(struct inode *, struct file *);
 static ssize_t device_read(struct file *, char *, size_t, loff_t *);
 static ssize_t device_write(struct file *, const char *, size_t, loff_t *);
 static int map_lophilo(struct file *filp, struct vm_area_struct *vma);
+static int map_lophilo2(struct file *filp, struct vm_area_struct *vma);
 
 static int Device_Open = 0;  /* Is device open?  Used to prevent multiple
                                         access to the device */
@@ -57,9 +61,9 @@ struct file_operations fops_mem = {
 		name, \
 		S_IRWXU | S_IRWXG | S_IRWXO, \
 		root, \
-		addr + offset);
+		(void*) addr + offset);
 
- struct dentry * create_channel_gpio(u8 id, char* buffer, struct dentry * parent, void* addr)
+ struct dentry * create_channel_gpio(u8 id, char* buffer, struct dentry * parent, u32 addr)
  {
  	int i;
  	struct dentry * root;
@@ -82,20 +86,19 @@ struct file_operations fops_mem = {
  	return root;
  }
 
- struct dentry * create_channel_pwm(u8 id, char* buffer, struct dentry * parent, void* addr)
+ struct dentry * create_channel_pwm(u8 id, char* buffer, struct dentry * parent, u32 addr)
  {
- 	int i;
  	struct dentry * root;
 
  	sprintf(buffer, "pwm%d", id);
  	root = debugfs_create_dir(buffer, parent);
 
- 	CREATE_CHANNEL_FILE(8, "reset", 0x8 + i*32);
- 	CREATE_CHANNEL_FILE(8, "outinv", 0x9 + i*32);
- 	CREATE_CHANNEL_FILE(8, "pmen", 0xa + i*32);
- 	CREATE_CHANNEL_FILE(8, "fmen", 0xb + i*32);
- 	CREATE_CHANNEL_FILE(32, "gate", 0xc + i*32);
- 	CREATE_CHANNEL_FILE(32, "dtyc", 0x10 + i*32);
+ 	CREATE_CHANNEL_FILE(8, "reset", 0x8);
+ 	CREATE_CHANNEL_FILE(8, "outinv", 0x9);
+ 	CREATE_CHANNEL_FILE(8, "pmen", 0xa);
+ 	CREATE_CHANNEL_FILE(8, "fmen", 0xb);
+ 	CREATE_CHANNEL_FILE(32, "gate", 0xc);
+ 	CREATE_CHANNEL_FILE(32, "dtyc", 0x10);
 
 	return root;
  }
@@ -198,15 +201,15 @@ lophilo_init(void)
 		subsystems[subsystem_id].id = ioread32(current_addr + 0x4);
 
 		if((subsystems[subsystem_id].id & 0xea000000) == 0xea000000) {
-			printk(KERN_INFO "Lophilo adding subsystem 0x%x of type 0x%x\n",
-				subsystem_id, subsystems[subsystem_id].id);
+			printk(KERN_INFO "Lophilo adding subsystem 0x%x of type 0x%x at 0x%x\n",
+				subsystem_id, subsystems[subsystem_id].id, (u32)current_addr);
 		} else {
 			printk(KERN_INFO "Lophilo ended detection, found 0x%x\n",
 				subsystems[subsystem_id].id);
 			break;
 		}
 
-		subsystems[subsystem_id].addr = current_addr;
+		subsystems[subsystem_id].addr = (u32) current_addr;
 
 		subsystems[subsystem_id].size = ioread32(current_addr);
 		//printk(KERN_INFO "Subsystem size 0x%x\n", subsystems[subsystem_id].size);
@@ -265,23 +268,67 @@ lophilo_init(void)
 }
 
 static int
+map_lophilo2(struct file *filp, struct vm_area_struct *vma)
+{
+	struct subsystem* subsystem_ptr = (struct subsystem*) filp->private_data;
+	unsigned long simple_region_size = subsystem_ptr->size;
+	unsigned long simple_region_start = subsystem_ptr->addr;
+	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
+	unsigned long physical = simple_region_start + off;
+	unsigned long vsize = vma->vm_end - vma->vm_start;
+	unsigned long psize = simple_region_size - off;
+
+	if (vsize > psize)
+    		return -EINVAL; /*  spans too high */
+	remap_pfn_range(vma, vma->vm_start, physical, vsize, vma->vm_page_prot);
+
+	return 0;
+}
+
+static int
 map_lophilo(struct file *filp, struct vm_area_struct *vma)
 {
 	long unsigned int size = vma->vm_end - vma->vm_start;
-	long unsigned int target_size = PAGE_SIZE;//sizeof(struct lophilo_data);
+	long unsigned int target_size = PAGE_SIZE;
 	struct subsystem* subsystem_ptr = (struct subsystem*) filp->private_data;
+
 
 	if(size != target_size) {
 		printk(KERN_INFO "Invalid allocation request, expected %ld, got %ld", target_size, size);
                 return -EAGAIN;
 	}
-	if (remap_pfn_range(vma, vma->vm_start, __pa(subsystem_ptr->addr) >> PAGE_SHIFT,
-	                    size, vma->vm_page_prot)) {
+	printk(KERN_INFO "will map to virt 0x%x phys 0x%x bus 0x%x",
+		subsystem_ptr->addr,
+		virt_to_phys((void*)subsystem_ptr->addr),
+		virt_to_bus((void*)subsystem_ptr->addr));
+
+	/*
+
+	Adapted from: http://fixunix.com/kernel/242682-mapping-pci-memory-user-space.html
+
+	There is no relationship between the address returned from ioremap and
+	what you pass into io_remap_page_range(). ioremap gives you a kernel
+	virtual address for the hardware address you remap. io_remap_page_range()
+	creates a userspace mapping in the same way, and you should pass in
+	the hw address exactly the same way you pass in the hw address into
+	ioremap. io_remap_pfn_range() takes a PFN ("page frame number"),
+	which is basically the hw address you want to map divided by
+	PAGE_SIZE. The main reason for using PFNs is that they allow you to
+	map addresses above 4G even if sizeof long is only 4.
+	*/
+	if (remap_pfn_range(
+			vma,
+			vma->vm_start,
+			0x20000000 >> PAGE_SHIFT,
+			PAGE_SIZE,
+			vma->vm_page_prot)) {
 		printk(KERN_INFO "Allocation failed!");
                 return -EAGAIN;
 	}
+
 	return 0;
 }
+
 
 void __exit
 lophilo_cleanup(void)
@@ -305,7 +352,7 @@ static int device_open(struct inode *inode, struct file *file)
    	return -EBUSY;
    Device_Open++;
 
-   printk(KERN_INFO "Dumping memory of subsystem size 0x%x bytes\n", subsystem_ptr->size);
+   printk(KERN_DEBUG "Dumping memory of subsystem size 0x%x bytes\n", subsystem_ptr->size);
 
    subsystem_ptr->current_offset = 0;
    file->private_data = subsystem_ptr;
@@ -344,7 +391,9 @@ static ssize_t device_read(struct file *filp,
         /* The buffer is in the user data segment, not the kernel segment;
          * assignment won't work.  We have to use put_user which copies data from
          * the kernel data segment to the user data segment. */
-         put_user(subsystem_ptr->addr[subsystem_ptr->current_offset], buffer++);
+         put_user(
+         	*((char*) (subsystem_ptr->addr + subsystem_ptr->current_offset)),
+         	buffer++);
          subsystem_ptr->current_offset++;
 
          length--;
