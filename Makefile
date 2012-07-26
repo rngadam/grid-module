@@ -1,9 +1,10 @@
+export LOPHILO_DIR:=${HOME}/lophilo
 export ARCH:=$(shell /usr/bin/dpkg-architecture -qDEB_HOST_ARCH_CPU)
 export TARGET_OS:=${HOME}/lophilo.nfs
-export TOOLCHAIN_PATH:=${HOME}/lophilo/codesourcery/arm926ej-s
+export TOOLCHAIN_PATH:=${LOPHILO_DIR}/codesourcery/arm926ej-s
 export PATH:=${TOOLCHAIN_PATH}:${PATH}
-export BUILD_DIR:=${HOME}/lophilo/obj/linux-debug
-export SRC_DIR:=${HOME}/lophilo/upstream/linux
+export BUILD_DIR:=${LOPHILO_DIR}/obj/linux-debug
+export SRC_DIR:=${LOPHILO_DIR}/linux
 
 obj-m += lophilo.o
 

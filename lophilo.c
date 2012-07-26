@@ -10,8 +10,12 @@
 #include <linux/ioport.h>
 #include <asm/io.h>
 #include <asm/uaccess.h>  /* for put_user */
+#include <linux/mm.h> // remap_pfn_range
 
 #define MAX_SUBSYSTEMS 32
+
+#define GPIO_SUBSYSTEM 0xea680001
+#define PWM_SUBSYSTEM 0xea680002
 
 struct subsystem {
 	u32 id;
@@ -28,6 +32,7 @@ static int device_open(struct inode *, struct file *);
 static int device_release(struct inode *, struct file *);
 static ssize_t device_read(struct file *, char *, size_t, loff_t *);
 static ssize_t device_write(struct file *, const char *, size_t, loff_t *);
+static int map_lophilo(struct file *filp, struct vm_area_struct *vma);
 
 static int Device_Open = 0;  /* Is device open?  Used to prevent multiple
                                         access to the device */
@@ -39,56 +44,60 @@ extern void __iomem *fpga_cs1_base;
 extern void __iomem *fpga_cs2_base;
 extern void __iomem *fpga_cs3_base;
 
-struct file_operations fops = {
-       .read = device_read,
-       .write = device_write,
-       .open = device_open,
-       .release = device_release
+struct file_operations fops_mem = {
+	.owner   = THIS_MODULE,
+	.read = device_read,
+	.write = device_write,
+	.open = device_open,
+	.release = device_release,
+	.mmap    = map_lophilo
  };
 
-#define create_channel_file(size, name, offset) debugfs_create_x##size( \
+#define CREATE_CHANNEL_FILE(size, name, offset) debugfs_create_x##size( \
 		name, \
 		S_IRWXU | S_IRWXG | S_IRWXO, \
-		parent, \
+		root, \
 		addr + offset);
 
- void create_channel_gpio(char* buffer, struct dentry * parent, void* addr)
+ struct dentry * create_channel_gpio(u8 id, char* buffer, struct dentry * parent, void* addr)
  {
  	int i;
+ 	struct dentry * root;
 
- 	parent = debugfs_create_dir("gpio", parent);
+ 	sprintf(buffer, "gpio%d", id);
+ 	root  = debugfs_create_dir(buffer, parent);
 
- 	create_channel_file(32, "dout", 0x8);
- 	create_channel_file(32, "din", 0xc);
- 	create_channel_file(32, "doe", 0x10);
- 	create_channel_file(32, "imask", 0x20);
- 	create_channel_file(32, "iclr", 0x24);
- 	create_channel_file(32, "ie", 0x28);
- 	create_channel_file(32, "iinv", 0x2c);
- 	create_channel_file(32, "iedge", 0x30);
+ 	CREATE_CHANNEL_FILE(32, "dout", 0x8);
+ 	CREATE_CHANNEL_FILE(32, "din", 0xc);
+ 	CREATE_CHANNEL_FILE(32, "doe", 0x10);
+ 	CREATE_CHANNEL_FILE(32, "imask", 0x20);
+ 	CREATE_CHANNEL_FILE(32, "iclr", 0x24);
+ 	CREATE_CHANNEL_FILE(32, "ie", 0x28);
+ 	CREATE_CHANNEL_FILE(32, "iinv", 0x2c);
+ 	CREATE_CHANNEL_FILE(32, "iedge", 0x30);
  	for(i=0; i<26; i++) {
  		sprintf(buffer, "io%d", i);
- 		create_channel_file(8, buffer, 0x40 + i);
+ 		CREATE_CHANNEL_FILE(8, buffer, 0x40 + i);
  	}
+ 	return root;
  }
 
- void create_channel_pwm(char* buffer, struct dentry * parent, void* addr)
+ struct dentry * create_channel_pwm(u8 id, char* buffer, struct dentry * parent, void* addr)
  {
  	int i;
+ 	struct dentry * root;
 
- 	struct dentry * root = debugfs_create_dir("pwm", parent);
+ 	sprintf(buffer, "pwm%d", id);
+ 	root = debugfs_create_dir(buffer, parent);
 
- 	for(i=0; i<26; i++) {
- 		sprintf(buffer, "io%d", i);
- 		parent = debugfs_create_dir(buffer, root);
+ 	CREATE_CHANNEL_FILE(8, "reset", 0x8 + i*32);
+ 	CREATE_CHANNEL_FILE(8, "outinv", 0x9 + i*32);
+ 	CREATE_CHANNEL_FILE(8, "pmen", 0xa + i*32);
+ 	CREATE_CHANNEL_FILE(8, "fmen", 0xb + i*32);
+ 	CREATE_CHANNEL_FILE(32, "gate", 0xc + i*32);
+ 	CREATE_CHANNEL_FILE(32, "dtyc", 0x10 + i*32);
 
-	 	create_channel_file(8, "reset", 0x8 + i*32);
-	 	create_channel_file(8, "outinv", 0x9 + i*32);
-	 	create_channel_file(8, "pmen", 0xa + i*32);
-	 	create_channel_file(8, "fmen", 0xb + i*32);
-	 	create_channel_file(32, "gate", 0xc + i*32);
-	 	create_channel_file(32, "dtyc", 0x10 + i*32);
-	 }
+	return root;
  }
 
 static int __init
@@ -96,9 +105,11 @@ lophilo_init(void)
 {
 	struct dentry *lophilo_subsystem_dentry;
 	int subsystem_id = 0;
-	char subsystem_str[64];
+	char buffer[64];
 	void* current_addr;
 	int i;
+	u8 pwm_id = 0;
+	u8 gpio_id = 0;
 
 	printk(KERN_INFO "Lophilo module loading\n");
 
@@ -110,8 +121,6 @@ lophilo_init(void)
 		return -EINVAL;
 	}
 	//fpga = request_mem_region(FPGA_BASE_ADDR, SIZE16MB, "Lophilo FPGA LEDs");
-	// power on
-	//iowrite32(0x03030300, fpga_cs0_base + 0x200);
 
 	debugfs_create_x16(
 		"id",
@@ -146,9 +155,9 @@ lophilo_init(void)
 		fpga_cs0_base + 0x200);
 
 	for(i=0; i<4; i++) {
-		sprintf(subsystem_str, "led%d", i);
+		sprintf(buffer, "led%d", i);
 		lophilo_subsystem_dentry = debugfs_create_dir(
-			subsystem_str,
+			buffer,
 			lophilo_dentry);
 
 		debugfs_create_x8(
@@ -178,14 +187,7 @@ lophilo_init(void)
 			fpga_cs0_base + 0x100);
 	}
 
-
 	current_addr = fpga_cs1_base;
-	lophilo_subsystem_dentry = debugfs_create_dir("a", lophilo_dentry);
-	create_channel_gpio(subsystem_str, lophilo_subsystem_dentry, fpga_cs1_base);
-
-	lophilo_subsystem_dentry = debugfs_create_dir("b", lophilo_dentry);
-	create_channel_gpio(subsystem_str, lophilo_subsystem_dentry, fpga_cs1_base + 0x80);
-	create_channel_pwm(subsystem_str, lophilo_subsystem_dentry, fpga_cs1_base + 0x100);
 
 	while(true) {
 		if(subsystem_id == MAX_SUBSYSTEMS) {
@@ -193,24 +195,40 @@ lophilo_init(void)
 			break;
 		}
 
-		subsystems[subsystem_id].addr = current_addr;
 		subsystems[subsystem_id].id = ioread32(current_addr + 0x4);
 
 		if((subsystems[subsystem_id].id & 0xea000000) == 0xea000000) {
-			printk(KERN_INFO "Lophilo adding subsystem 0x%x of type 0x%x\n", subsystem_id, subsystems[subsystem_id].id);
+			printk(KERN_INFO "Lophilo adding subsystem 0x%x of type 0x%x\n",
+				subsystem_id, subsystems[subsystem_id].id);
 		} else {
-			printk(KERN_INFO "Lophilo ended detection, found 0x%x\n", subsystems[subsystem_id].id);
+			printk(KERN_INFO "Lophilo ended detection, found 0x%x\n",
+				subsystems[subsystem_id].id);
 			break;
 		}
 
+		subsystems[subsystem_id].addr = current_addr;
 
 		subsystems[subsystem_id].size = ioread32(current_addr);
 		//printk(KERN_INFO "Subsystem size 0x%x\n", subsystems[subsystem_id].size);
 
-		sprintf(subsystem_str, "subsystem%d", subsystem_id);
-		debugfs_create_dir(
-			subsystem_str,
-			lophilo_dentry);
+		switch(subsystems[subsystem_id].id) {
+			case GPIO_SUBSYSTEM:
+				lophilo_subsystem_dentry = create_channel_gpio(
+					gpio_id++,
+					buffer,
+					lophilo_dentry,
+					subsystems[subsystem_id].addr);
+				break;
+			case PWM_SUBSYSTEM:
+				lophilo_subsystem_dentry = create_channel_pwm(
+					pwm_id++,
+					buffer,
+					lophilo_dentry,
+					subsystems[subsystem_id].addr);
+				break;
+			default:
+				printk(KERN_ERR "Unsupported file system id %d", subsystems[subsystem_id].id);
+		}
 
 		debugfs_create_x32(
 			"size",
@@ -235,7 +253,7 @@ lophilo_init(void)
 			S_IRWXU | S_IRWXG | S_IRWXO,
 			lophilo_subsystem_dentry,
 			&subsystems[subsystem_id],
-			&fops
+			&fops_mem
 			);
 		current_addr += subsystems[subsystem_id].size;
 		//printk(KERN_INFO "current_addr increment to 0x%x for subsystem 0x%x", current_addr, subsystem_id);
@@ -243,6 +261,25 @@ lophilo_init(void)
 
 	}
 
+	return 0;
+}
+
+static int
+map_lophilo(struct file *filp, struct vm_area_struct *vma)
+{
+	long unsigned int size = vma->vm_end - vma->vm_start;
+	long unsigned int target_size = PAGE_SIZE;//sizeof(struct lophilo_data);
+	struct subsystem* subsystem_ptr = (struct subsystem*) filp->private_data;
+
+	if(size != target_size) {
+		printk(KERN_INFO "Invalid allocation request, expected %ld, got %ld", target_size, size);
+                return -EAGAIN;
+	}
+	if (remap_pfn_range(vma, vma->vm_start, __pa(subsystem_ptr->addr) >> PAGE_SHIFT,
+	                    size, vma->vm_page_prot)) {
+		printk(KERN_INFO "Allocation failed!");
+                return -EAGAIN;
+	}
 	return 0;
 }
 
