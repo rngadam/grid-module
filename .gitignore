@@ -1,0 +1,12 @@
+.lophilo.ko.cmd
+.lophilo.mod.o.cmd
+.lophilo.o.cmd
+.tmp_versions/
+Module.symvers
+lophilo.ko
+lophilo.mod.c
+lophilo.mod.o
+lophilo.o
+lophilo_user
+modules.order
+
