@@ -7,28 +7,33 @@
 
 int main(int argn, char* argv[])
 {
-  int fd;
+  int sysmem_fd;
   char* data;
   int length = 4096;
   int i;
+  unsigned int* reg;
   if(argn < 2) {
 	  printf("filename required\n");
 	  return 1;
   }
-  fd = open(argv[1], O_RDWR);
+  sysmem_fd = open(argv[1], O_RDWR);
   data = mmap(
 	  0,  // starting address
 	  length, // length
 	  PROT_READ | PROT_WRITE,  //prot
 	  MAP_SHARED, //flags
-	  fd, //filedescriptor
+	  sysmem_fd, //filedescriptor
 	  0x0 // offset
 	  );
-  close(fd);
-  printf("reading from %p\n", data);
+  close(sysmem_fd);
+  printf("current value: %d\n", (int)data[512]);
+  reg = (int*) &data[512];
+  //*reg =  0x03030300;
+  *reg = 0;
+  /*
   for(i=0;i<length;i++) {
 	  printf("%02x ", data[i]);
-  }
+  }*/
   munmap(data, length);
 
   return 0;
