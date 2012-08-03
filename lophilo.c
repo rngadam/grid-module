@@ -36,6 +36,9 @@ extern void __iomem *fpga_cs2_base;
 extern void __iomem *fpga_cs3_base;
 
 #define MAX_SUBSYSTEMS 32
+#define MAX_REGISTRY_SIZE PAGE_SIZE*4
+#define MAX_PARENT_NAME 32
+#define MAX_IO_NAME 5 // ioXX\0
 
 #define GPIO_SUBSYSTEM 0xea680001
 #define PWM_SUBSYSTEM 0xea680002
@@ -83,7 +86,7 @@ static struct subsystem mod_subsystem = {
 	.offset = 0
 };
 
-char registry[16000];
+char registry[MAX_REGISTRY_SIZE];
 static struct debugfs_blob_wrapper registry_blob = {
 	.data = registry,
 	.size = 0
@@ -93,7 +96,7 @@ struct resource * fpga;
 
 static struct dentry *lophilo_dentry;
 
-char parent_name[64]; // for generating names
+char parent_name[MAX_PARENT_NAME]; // for generating names
 
 #define CREATE_CHANNEL_FILE(size, name, offset) \
 	debugfs_create_x##size( \
@@ -108,6 +111,8 @@ void create_registry_entry(u8 size, char* parent_name, char* name, u32 addr, u32
 	char* type_sys = "sys";
 	char* type_mod = "mod";
 	char* type;
+	int length;
+
 	if(addr < (u32)fpga_cs1_base) {
 		type = type_sys;
 		offset += addr - (u32)fpga_cs0_base;
@@ -115,11 +120,20 @@ void create_registry_entry(u8 size, char* parent_name, char* name, u32 addr, u32
 		type = type_mod;
 		offset += addr - (u32)fpga_cs1_base;
 	}
-	sprintf(&registry[registry_blob.size],
+	// size is number of characters written, excluding trailing '\0'
+	if(registry_blob.size+1 >= MAX_REGISTRY_SIZE) {
+		printk(KERN_ERR "Unable to add %s/%s to registry; out of space", parent_name, name);
+		return;
+	}
+	// http://www.kernel.org/doc/htmldocs/kernel-api/API-scnprintf.html
+	// The return value is the number of characters written into buf not including the trailing '\0'.
+	// If size is == 0 the function returns 0.
+	length = scnprintf(&registry[registry_blob.size],
+		MAX_REGISTRY_SIZE - registry_blob.size,
 		"%s %u %s %s %u\n",
 		type, size, parent_name, name, offset);
-	printk(KERN_INFO "%s", &registry[registry_blob.size]);
-	registry_blob.size += strlen(&registry[registry_blob.size]);
+	registry_blob.size += length;
+	//printk(KERN_INFO "registry updated size: %d", registry_blob.size);
 }
 
 
@@ -127,9 +141,9 @@ void create_registry_entry(u8 size, char* parent_name, char* name, u32 addr, u32
  {
  	int i;
  	struct dentry * root;
- 	char io_name[3];
+ 	char io_name[MAX_IO_NAME];
 
- 	sprintf(parent_name, "gpio%d", id);
+ 	scnprintf(parent_name, MAX_PARENT_NAME, "gpio%d", id);
  	root  = debugfs_create_dir(parent_name, parent);
 
  	CREATE_CHANNEL_FILE(32, "dout", 0x8);
@@ -141,7 +155,7 @@ void create_registry_entry(u8 size, char* parent_name, char* name, u32 addr, u32
  	CREATE_CHANNEL_FILE(32, "iinv", 0x2c);
  	CREATE_CHANNEL_FILE(32, "iedge", 0x30);
  	for(i=0; i<26; i++) {
- 		sprintf(io_name, "io%d", i);
+ 		scnprintf(io_name, MAX_IO_NAME, "io%d", i);
  		CREATE_CHANNEL_FILE(8, io_name, 0x40 + i);
  	}
  	return root;
@@ -151,7 +165,7 @@ void create_registry_entry(u8 size, char* parent_name, char* name, u32 addr, u32
  {
  	struct dentry * root;
 
-	sprintf(parent_name, "led%d", id);
+	scnprintf(parent_name, MAX_PARENT_NAME, "led%d", id);
 	root = debugfs_create_dir(parent_name, parent);
 
  	CREATE_CHANNEL_FILE(8, "b",  0x100 + 0x4 * id);
@@ -167,7 +181,7 @@ void create_registry_entry(u8 size, char* parent_name, char* name, u32 addr, u32
  {
  	struct dentry * root;
 
- 	sprintf(parent_name, "pwm%d", id);
+ 	scnprintf(parent_name, MAX_PARENT_NAME, "pwm%d", id);
  	root = debugfs_create_dir(parent_name, parent);
 
  	CREATE_CHANNEL_FILE(8, "reset", 0x8);
@@ -182,7 +196,7 @@ void create_registry_entry(u8 size, char* parent_name, char* name, u32 addr, u32
 
  void create_root(struct dentry * root, u32 addr)
  {
- 	strcpy(parent_name, "lophilo");
+ 	strcpy(parent_name, "lophilo"); // strlen(lophilo) << MAX_PARENT_NAME
  	CREATE_CHANNEL_FILE(16, "id", 0x0);
 	CREATE_CHANNEL_FILE(16, "flag", 0x2);
 	CREATE_CHANNEL_FILE(32, "ver", 0x4);
@@ -247,7 +261,7 @@ lophilo_init(void)
 		}
 
 		subsystems[subsystem_id].id = ioread32(current_addr + 0x4);
-		subsystems[subsystem_id].offset = fpga_cs1_base - current_addr;
+		subsystems[subsystem_id].offset = current_addr - fpga_cs1_base;
 
 		if((subsystems[subsystem_id].id & 0xea000000) == 0xea000000) {
 			printk(KERN_INFO "Lophilo adding subsystem 0x%x of type 0x%x at 0x%x\n",
@@ -262,6 +276,11 @@ lophilo_init(void)
 		subsystems[subsystem_id].paddr = MOD_PHYS_ADDR;
 
 		subsystems[subsystem_id].size = ioread32(current_addr);
+		if(subsystems[subsystem_id].size < 4) {
+			printk(KERN_ERR "Invalid subsystem size %d, aborting detection\n",
+			       subsystems[subsystem_id].size);
+			break;
+		}
 
 		switch(subsystems[subsystem_id].id) {
 			case GPIO_SUBSYSTEM:
@@ -305,7 +324,6 @@ lophilo_init(void)
 		mod_subsystem.size += subsystems[subsystem_id].size;
 		//printk(KERN_INFO "current_addr increment to 0x%x for subsystem 0x%x", current_addr, subsystem_id);
 		subsystem_id++;
-
 	}
 
 	debugfs_create_blob(
