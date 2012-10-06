@@ -7,10 +7,13 @@ export BUILD_DIR:=${LOPHILO_DIR}/obj/linux
 export BUILD_DIR_DEBUG:=${LOPHILO_DIR}/obj/linux-debug
 export SRC_DIR:=${LOPHILO_DIR}/linux
 export KBUILD_VERBOSE:=0
-export MODULE_VERSION:=$(shell modinfo -F vermagic lophilo-standard.ko | cut -f 1 -d " ")
-export MODULE_DEBUG_VERSION:=$(shell modinfo -F vermagic lophilo-debug.ko | cut -f 1 -d " ")
+#export KV:=$(shell make -C ${SRC_DIR} -f ${SRC_DIR}/Makefile kernelversion)
+
+#TODO: figure out how to extract this from obj directory
+export MODULE_VERSION:=3.4.4+
+export MODULE_VERSION_DEBUG:=3.4.4-debug+
 export MODULE_PATH:=${TARGET_OS}/lib/modules/${MODULE_VERSION}
-export MODULE_PATH_DEBUG:=${TARGET_OS}/lib/modules/${MODULE_DEBUG_VERSION}
+export MODULE_PATH_DEBUG:=${TARGET_OS}/lib/modules/${MODULE_VERSION_DEBUG}
 export MODULE_PATH_LOPHILO:=${MODULE_PATH}/lophilo
 export MODULE_PATH_LOPHILO_DEBUG:=${MODULE_PATH_DEBUG}/lophilo
 
