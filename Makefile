@@ -7,6 +7,12 @@ export BUILD_DIR:=${LOPHILO_DIR}/obj/linux
 export BUILD_DIR_DEBUG:=${LOPHILO_DIR}/obj/linux-debug
 export SRC_DIR:=${LOPHILO_DIR}/linux
 export KBUILD_VERBOSE:=0
+export MODULE_VERSION:=$(shell modinfo -F vermagic lophilo-standard.ko | cut -f 1 -d " ")
+export MODULE_DEBUG_VERSION:=$(shell modinfo -F vermagic lophilo-debug.ko | cut -f 1 -d " ")
+export MODULE_PATH:=${TARGET_OS}/lib/modules/${MODULE_VERSION}
+export MODULE_PATH_DEBUG:=${TARGET_OS}/lib/modules/${MODULE_DEBUG_VERSION}
+export MODULE_PATH_LOPHILO:=${MODULE_PATH}/lophilo
+export MODULE_PATH_LOPHILO_DEBUG:=${MODULE_PATH_DEBUG}/lophilo
 
 obj-m += lophilo.o
 
@@ -14,21 +20,32 @@ obj-m += lophilo.o
 
 all: install
 
-lophilo-standard.ko: lophilo.c
+lophilo-standard.ko: lophilo.c ${BUILD_DIR}/arch/arm/boot/zImage
 	make ARCH=arm -C ${BUILD_DIR} M=$(PWD) modules
 	mv lophilo.ko lophilo-standard.ko
 
-lophilo-debug.ko: lophilo.c
+lophilo-debug.ko: lophilo.c ${BUILD_DIR_DEBUG}/arch/arm/boot/zImage
 	make ARCH=arm -C ${BUILD_DIR_DEBUG} M=$(PWD) modules
 	mv lophilo.ko lophilo-debug.ko
 
 clean: 
 	make ARCH=arm -C ${BUILD_DIR} M=$(PWD) clean
 
-install: lophilo-debug.ko lophilo-standard.ko lophilo_user
-	sudo cp lophilo-standard.ko ${TARGET_OS} 
-	sudo cp lophilo-debug.ko ${TARGET_OS}
-	sudo cp lophilo_user ${TARGET_OS} 
+install: ${MODULE_PATH}/modules.dep ${MODULE_PATH_DEBUG}/modules.dep
+
+${MODULE_PATH}/modules.dep: ${MODULE_PATH_LOPHILO}/lophilo.ko
+	@echo "don't forget to run depmod -a on the target system to generate $@"
+
+${MODULE_PATH_DEBUG}/modules.dep: ${MODULE_PATH_LOPHILO_DEBUG}/lophilo.ko
+	@echo "don't forget to run depmod -a on the target system $@"
+
+${MODULE_PATH_LOPHILO_DEBUG}/lophilo.ko: lophilo-debug.ko
+	sudo mkdir -p ${MODULE_PATH_LOPHILO_DEBUG}
+	sudo cp lophilo-debug.ko ${MODULE_PATH_LOPHILO_DEBUG}
+
+${MODULE_PATH_LOPHILO}/lophilo.ko: lophilo-standard.ko
+	sudo mkdir -p ${MODULE_PATH_LOPHILO}
+	sudo cp lophilo-standard.ko ${MODULE_PATH_LOPHILO}/lophilo.ko
 
 checkstyle:
 	# the root requirement doesn't seem to be there in 3.4
