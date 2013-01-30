@@ -10,8 +10,8 @@ export KBUILD_VERBOSE:=0
 #export KV:=$(shell make -C ${SRC_DIR} -f ${SRC_DIR}/Makefile kernelversion)
 
 #TODO: figure out how to extract this from obj directory
-export MODULE_VERSION:=3.4.4+
-export MODULE_VERSION_DEBUG:=3.4.4-debug+
+export MODULE_VERSION:=3.4.18+
+export MODULE_VERSION_DEBUG:=3.4.18-debug+
 export MODULE_PATH:=${TARGET_OS}/lib/modules/${MODULE_VERSION}
 export MODULE_PATH_DEBUG:=${TARGET_OS}/lib/modules/${MODULE_VERSION_DEBUG}
 export MODULE_PATH_LOPHILO:=${MODULE_PATH}/lophilo
